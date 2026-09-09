@@ -102,46 +102,102 @@ class GLB:
 
     # ---------- запись ----------
 
+    def _append(self, array: np.ndarray, acc_type: str, extra: dict | None = None) -> int:
+        """Дописать массив в бинарный чанк и завести на него аккессор."""
+        raw = array.astype(np.float32).tobytes()
+        offset = len(self.bin)
+        self.bin += raw + b'\x00' * ((-len(raw)) % 4)
+        self.json.setdefault('bufferViews', []).append(
+            {'buffer': 0, 'byteOffset': offset, 'byteLength': len(raw)})
+        acc = {'bufferView': len(self.json['bufferViews']) - 1, 'componentType': 5126,
+               'count': len(array), 'type': acc_type}
+        if extra:
+            acc.update(extra)
+        self.json.setdefault('accessors', []).append(acc)
+        self.json['buffers'] = [{'byteLength': len(self.bin)}]
+        return len(self.json['accessors']) - 1
+
+    def _times_accessor(self, times: np.ndarray) -> int:
+        return self._append(times.reshape(-1, 1), 'SCALAR',
+                            {'min': [float(times.min())], 'max': [float(times.max())]})
+
     def add_animation(self, name: str, times: np.ndarray, tracks: dict[int, np.ndarray],
                       translations: dict[int, np.ndarray] | None = None) -> None:
         """Дописать клип: `tracks` — кватернионы по узлам, `translations` — сдвиг таза."""
-        bin_parts = [self.bin]
-        offset = len(self.bin)
-
-        def push(array: np.ndarray, comp_type: str, acc_type: str, extra: dict | None = None) -> int:
-            nonlocal offset
-            raw = array.astype(np.float32 if comp_type == 'f4' else comp_type).tobytes()
-            pad = (-len(raw)) % 4
-            bin_parts.append(raw + b'\x00' * pad)
-            view = {'buffer': 0, 'byteOffset': offset, 'byteLength': len(raw)}
-            offset += len(raw) + pad
-            self.json.setdefault('bufferViews', []).append(view)
-            acc = {
-                'bufferView': len(self.json['bufferViews']) - 1,
-                'componentType': 5126,
-                'count': len(array),
-                'type': acc_type,
-            }
-            if extra:
-                acc.update(extra)
-            self.json.setdefault('accessors', []).append(acc)
-            return len(self.json['accessors']) - 1
-
-        time_acc = push(times.reshape(-1, 1), 'f4', 'SCALAR',
-                        {'min': [float(times.min())], 'max': [float(times.max())]})
+        time_acc = self._times_accessor(times)
         samplers, channels = [], []
         for node, quats in tracks.items():
-            out = push(quats, 'f4', 'VEC4')
+            out = self._append(quats, 'VEC4')
             samplers.append({'input': time_acc, 'output': out, 'interpolation': 'LINEAR'})
-            channels.append({'sampler': len(samplers) - 1, 'target': {'node': int(node), 'path': 'rotation'}})
+            channels.append({'sampler': len(samplers) - 1,
+                             'target': {'node': int(node), 'path': 'rotation'}})
         for node, values in (translations or {}).items():
-            out = push(values, 'f4', 'VEC3')
+            out = self._append(values, 'VEC3')
             samplers.append({'input': time_acc, 'output': out, 'interpolation': 'LINEAR'})
-            channels.append({'sampler': len(samplers) - 1, 'target': {'node': int(node), 'path': 'translation'}})
+            channels.append({'sampler': len(samplers) - 1,
+                             'target': {'node': int(node), 'path': 'translation'}})
+        self.json.setdefault('animations', []).append(
+            {'name': name, 'samplers': samplers, 'channels': channels})
 
-        self.json.setdefault('animations', []).append({'name': name, 'samplers': samplers, 'channels': channels})
-        self.bin = b''.join(bin_parts)
-        self.json['buffers'] = [{'byteLength': len(self.bin)}]
+    # ---------- морф-таргеты (мимика) ----------
+
+    def morph_meshes(self) -> list[dict]:
+        """Узлы с морф-таргетами: их веса и задают выражение лица."""
+        meshes = self.json.get('meshes', [])
+        out = []
+        for i, n in enumerate(self.nodes):
+            mesh_index = n.get('mesh')
+            if mesh_index is None:
+                continue
+            mesh = meshes[mesh_index]
+            prim = (mesh.get('primitives') or [{}])[0]
+            targets = prim.get('targets') or []
+            if not targets:
+                continue
+            names = (mesh.get('extras', {}).get('targetNames')
+                     or prim.get('extras', {}).get('targetNames')
+                     or [f'target{k}' for k in range(len(targets))])
+            out.append({'node': i, 'mesh': mesh_index,
+                        'name': n.get('name') or mesh.get('name') or f'mesh{mesh_index}',
+                        'names': list(names), 'count': len(targets)})
+        return out
+
+    def set_weights(self, node: int, weights: list[float]) -> None:
+        """Статичное выражение: веса морф-таргетов прямо в узле."""
+        self.nodes[node]['weights'] = [float(w) for w in weights]
+
+    def add_weights_animation(self, name: str, times: np.ndarray, node: int,
+                              values: np.ndarray) -> None:
+        """Клип мимики: `values` — матрица (кадры × таргеты)."""
+        time_acc = self._times_accessor(times)
+        out = self._append(values.reshape(-1, 1), 'SCALAR')
+        animation = {'name': name,
+                     'samplers': [{'input': time_acc, 'output': out, 'interpolation': 'LINEAR'}],
+                     'channels': [{'sampler': 0, 'target': {'node': int(node), 'path': 'weights'}}]}
+        self.json.setdefault('animations', []).append(animation)
+
+    def set_local(self, index: int, rotation=None, translation=None) -> None:
+        """Записать поворот/сдвиг в саму позу модели, а не в клип.
+
+        Узел, заданный матрицей, сначала раскладываем на TRS: в glTF нельзя
+        держать и `matrix`, и покомпонентную запись одновременно.
+        """
+        n = self.nodes[index]
+        if 'matrix' in n:
+            t, r, s = self.rest_local(index)
+            n.pop('matrix')
+            n['translation'] = [float(v) for v in t]
+            n['rotation'] = [float(v) for v in r]
+            n['scale'] = [float(v) for v in s]
+        if rotation is not None:
+            n['rotation'] = [float(v) for v in rotation]
+        if translation is not None:
+            n['translation'] = [float(v) for v in translation]
+
+    def drop_animations(self) -> None:
+        """Убрать все клипы: для статичной позы они только мешают — проигрыватель
+        первым делом запустит анимацию и поза уедет."""
+        self.json.pop('animations', None)
 
     def to_bytes(self) -> bytes:
         raw_json = json.dumps(self.json, separators=(',', ':')).encode('utf-8')

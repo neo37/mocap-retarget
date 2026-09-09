@@ -42,7 +42,7 @@ const idleLandmarks = Array.from({ length: 33 }, (_, i) => {
 /* ---------- scene ---------- */
 const stage = $('stage');
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x14181d);
+scene.background = new THREE.Color(0x0f0f11);
 const camera = new THREE.PerspectiveCamera(38, 1, 0.05, 100);
 
 let renderer = null;
@@ -63,17 +63,17 @@ scene.add(new THREE.HemisphereLight(0xdfe9ff, 0x1a2026, 1.4));
 const key = new THREE.DirectionalLight(0xffffff, 1.7);
 key.position.set(2.5, 4, 3);
 scene.add(key);
-const rim = new THREE.DirectionalLight(0x6ee7b7, 0.8);
+const rim = new THREE.DirectionalLight(0xd8ff36, 0.8);
 rim.position.set(-3, 1.5, -2.5);
 scene.add(rim);
 
-const grid = new THREE.GridHelper(6, 24, 0x39424d, 0x232a31);
+const grid = new THREE.GridHelper(6, 24, 0x2b2b30, 0x1e1e22);
 grid.material.transparent = true;
 grid.material.opacity = 0.5;
 scene.add(grid);
 
 const boneMat = new THREE.MeshStandardMaterial({ color: 0xd7dee7, roughness: 0.55, metalness: 0.05 });
-const jointMat = new THREE.MeshStandardMaterial({ color: 0x6ee7b7, roughness: 0.35, metalness: 0.1 });
+const jointMat = new THREE.MeshStandardMaterial({ color: 0xd8ff36, roughness: 0.35, metalness: 0.1 });
 const idleMat = new THREE.MeshStandardMaterial({ color: 0x59636f, roughness: 0.8, metalness: 0 });
 
 let figure = null;

@@ -115,3 +115,94 @@ def smooth(capture: Capture, window: int = 5) -> Capture:
         padded = np.pad(arr, ((window // 2, window // 2), (0, 0)), mode='edge')
         out[key] = np.stack([np.convolve(padded[:, i], kernel, mode='valid')[:len(arr)] for i in range(3)], axis=1)
     return Capture(capture.fps, capture.times, out, capture.visibility, capture.frames, capture.detected)
+
+
+def probe(video_path: str) -> dict:
+    """Длительность и частота кадров — чтобы UI знал, что показывать."""
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise ValueError('не смог открыть видео')
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    cap.release()
+    return {'fps': fps, 'frames': frames, 'duration': frames / fps if fps else 0.0}
+
+
+def extract_at(video_path: str, times: list[float]) -> Capture:
+    """Снять позу на указанных секундах — по кадру на каждую отметку.
+
+    Режим IMAGE, а не VIDEO: кадры выбраны вручную и идут не подряд, трекинг
+    между ними только навредит.
+    """
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise ValueError('не смог открыть видео')
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+
+    options = vision.PoseLandmarkerOptions(
+        base_options=mp_python.BaseOptions(model_asset_path=MODEL_PATH),
+        running_mode=vision.RunningMode.IMAGE,
+        num_poses=1,
+        min_pose_detection_confidence=0.3,
+        min_pose_presence_confidence=0.3,
+    )
+
+    taken: list[float] = []
+    series: dict[str, list[np.ndarray]] = {k: [] for k in LM}
+    vis: dict[str, list[float]] = {k: [] for k in LM}
+
+    with vision.PoseLandmarker.create_from_options(options) as landmarker:
+        for t in times:
+            cap.set(cv2.CAP_PROP_POS_MSEC, max(0.0, float(t)) * 1000)
+            ok, frame = cap.read()
+            if not ok:
+                continue
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            res = landmarker.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
+            if not res.pose_world_landmarks:
+                continue
+            world, screen = res.pose_world_landmarks[0], res.pose_landmarks[0]
+            for key, i in LM.items():
+                p = world[i]
+                series[key].append(np.array([p.x, -p.y, -p.z], dtype=np.float64))
+                vis[key].append(float(getattr(screen[i], 'visibility', 1.0)))
+            taken.append(float(t))
+
+    cap.release()
+    if not taken:
+        raise ValueError('на выбранных кадрах не нашлось человека')
+    return Capture(
+        fps=fps,
+        times=np.array(taken),
+        points={k: np.array(v) for k, v in series.items()},
+        visibility={k: np.array(v) for k, v in vis.items()},
+        frames=len(taken),
+        detected=len(taken),
+    )
+
+
+def extract_image(image_path: str) -> Capture:
+    """Поза с фотографии — один кадр, тот же формат захвата, что и у видео."""
+    frame = cv2.imread(image_path)
+    if frame is None:
+        raise ValueError('не смог открыть изображение')
+    options = vision.PoseLandmarkerOptions(
+        base_options=mp_python.BaseOptions(model_asset_path=MODEL_PATH),
+        running_mode=vision.RunningMode.IMAGE,
+        num_poses=1,
+        min_pose_detection_confidence=0.3,
+        min_pose_presence_confidence=0.3,
+    )
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    with vision.PoseLandmarker.create_from_options(options) as landmarker:
+        res = landmarker.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
+    if not res.pose_world_landmarks:
+        raise ValueError('на фотографии не нашлось человека')
+    world, screen = res.pose_world_landmarks[0], res.pose_landmarks[0]
+    points, vis = {}, {}
+    for key, i in LM.items():
+        p = world[i]
+        points[key] = np.array([[p.x, -p.y, -p.z]], dtype=np.float64)
+        vis[key] = np.array([float(getattr(screen[i], 'visibility', 1.0))])
+    return Capture(fps=1.0, times=np.array([0.0]), points=points, visibility=vis,
+                   frames=1, detected=1)

@@ -156,3 +156,67 @@ def _rest_world_quat(rest_world: dict[int, np.ndarray], node: int) -> np.ndarray
     scale = np.linalg.norm(m, axis=0)
     scale[scale == 0] = 1
     return gltf.matrix_to_quat(m / scale)
+
+
+def _single(capture: Capture, frame: int) -> Capture:
+    """Захват из одного кадра — на нём считается статичная поза."""
+    return Capture(
+        fps=capture.fps,
+        times=np.array([0.0]),
+        points={k: v[frame:frame + 1] for k, v in capture.points.items()},
+        visibility={k: v[frame:frame + 1] for k, v in capture.visibility.items()},
+        frames=1,
+        detected=1,
+    )
+
+
+def pose_frame(glb: gltf.GLB, mapping: dict[str, str | None], capture: Capture,
+               frame: int = 0) -> None:
+    """Поставить модель в позу одного кадра — не клипом, а самой позой узлов.
+
+    Считаем ту же дорожку, что и для анимации, но на одном кадре, снимаем её
+    обратно и вписываем в TRS костей. Аккессоры от снятого клипа остаются в файле
+    неиспользованными — пара сотен байт, зато не дублируется вся математика.
+    """
+    retarget(glb, mapping, _single(capture, frame), clip_name='__pose__')
+    clip = glb.json['animations'].pop()
+    if not glb.json['animations']:
+        glb.json.pop('animations')
+    for ch in clip['channels']:
+        node = ch['target']['node']
+        values = glb.accessor(clip['samplers'][ch['sampler']]['output'])[0]
+        if ch['target']['path'] == 'rotation':
+            glb.set_local(node, rotation=values)
+        else:
+            glb.set_local(node, translation=values)
+
+
+def apply_animation(glb: gltf.GLB, animation: dict, start: float = 0.0,
+                    end: float | None = None, clip_name: str = 'Фрагмент') -> int:
+    """Наложить ранее снятую анимацию (или её кусок) на модель.
+
+    Работает по именам костей: `animation` — это тот же json, что отдаёт сервис
+    рядом с результатом. Возвращает число кадров в получившемся клипе.
+    """
+    times = np.array(animation['times'], dtype=np.float64)
+    end = times[-1] if end is None else end
+    keep = np.where((times >= start - 1e-6) & (times <= end + 1e-6))[0]
+    if len(keep) < 2:
+        raise ValueError('в выбранном отрезке меньше двух кадров')
+
+    name_to_node = {n.get('name'): i for i, n in enumerate(glb.nodes) if n.get('name')}
+    tracks: dict[int, np.ndarray] = {}
+    translations: dict[int, np.ndarray] = {}
+    for bone, paths in animation['tracks'].items():
+        node = name_to_node.get(bone)
+        if node is None:
+            continue
+        if 'rotation' in paths:
+            tracks[node] = np.array(paths['rotation'], dtype=np.float32)[keep]
+        if 'translation' in paths:
+            translations[node] = np.array(paths['translation'], dtype=np.float32)[keep]
+    if not tracks:
+        raise ValueError('кости из анимации не нашлись в модели')
+    glb.add_animation(clip_name, (times[keep] - times[keep][0]).astype(np.float32),
+                      tracks, translations or None)
+    return len(keep)

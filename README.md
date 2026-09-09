@@ -1,9 +1,9 @@
 # Motion capture from video → any rigged model
 
-A local service: upload a **video** of a person and a **rigged model** (`.glb`) —
-get the same model back with a new animation clip that reproduces the motion from
-the video. The rig can be arbitrary: on a separate screen you say which bone plays
-which humanoid joint.
+Upload a **video or a photo** of a person and a **rigged model** (`.glb`) — get the
+model back holding that pose, or carrying a whole animation clip taken from the
+video. The rig can be arbitrary: you point at the bones in a 3D view and say which
+one plays which humanoid joint.
 
 **[Live demo](https://neo37.github.io/mocap-retarget/)** — drop a photo in the
 browser, get the detected pose as a 3D figure on the page (runs fully client-side).
@@ -12,30 +12,30 @@ browser, get the detected pose as a 3D figure on the page (runs fully client-sid
 docker compose up --build     →  http://127.0.0.1:8099
 ```
 
+## Screens
+
+| Screen | What it does |
+|---|---|
+| Projects | Every project keeps its model, its videos and photos, and everything produced from them. Stored on disk, so it is all still there after a restart. |
+| Project | Pick single frames off the video's film strip → the model in exactly that pose. Or capture the whole clip. Trim a finished clip down to a fragment and save it separately. |
+| Skeleton | The model's own skeleton in 3D: pick a humanoid slot, click the bone. Mapped bones light up, required-but-missing ones are called out. |
+| Face | Expression transfer: 52 ARKit coefficients from a photo or video onto the model's morph targets (auto-matched by name, editable). |
+| Face swap | Optional: hands a video and a donor photo to an external face-swap service (`FACESWAP_URL`), stores the resulting clips in the project. |
+
 ## What's inside
 
 | Layer | File | Job |
 |---|---|---|
-| Capture | `app/pose.py` | MediaPipe Pose Landmarker in video mode: 33 points per frame, world coordinates |
+| Capture | `app/pose.py` | MediaPipe Pose Landmarker: whole video, chosen frames, or a single photo — 33 points, world coordinates |
 | Skeleton | `app/humanoid.py` | 19 humanoid slots, name synonyms (Meshy, Mixamo, VRM, Unreal, Rigify), automatic matching |
-| Retarget | `app/retarget.py` | bone direction in the video → shortest rotation from the rest pose → local quaternion |
-| glTF | `app/gltf.py` | reading GLB, rest pose, appending the clip back into the file |
-| HTTP+UI | `app/main.py`, `app/static/` | uploads, jobs, result preview in three.js |
+| Retarget | `app/retarget.py` | bone direction in the video → shortest rotation from the rest pose → local quaternion; also static poses and clip trimming |
+| Face | `app/face.py` | ARKit blendshapes from MediaPipe, matched onto the model's morph targets |
+| glTF | `app/gltf.py` | reading GLB, rest pose, writing rotation and morph-weight animation, baking a static pose |
+| Projects | `app/projects.py`, `app/frames.py` | project files on disk, film-strip thumbnails |
+| HTTP+UI | `app/main.py`, `app/static/` | uploads, jobs, three.js views |
 
 No Blender, no game engine: forward kinematics and glTF writing are done by hand,
 so the image stays small and everything runs without a GPU.
-
-## How to use it
-
-1. **Capture** — drag in a `.glb` and a video, press "Capture motion".
-   Settings: clip name, how many seconds to take, smoothing (a moving average over
-   the landmarks — MediaPipe jitters noticeably), whether to transfer hip movement.
-2. **Skeleton** — for an unusual rig, open the tab and pick the bones by hand.
-   Required slots are marked with a dot: hips, upper arms, forearms, thighs, shins.
-   Whatever could be matched by name is filled in already.
-3. Result: the **animated model** (`.glb`, the clip is appended to the existing ones)
-   and the **animation alone** (`.json`: times plus per-bone quaternions — apply it to
-   another model with the same rig, or use it from your own code).
 
 ## How the retargeting works
 
@@ -46,23 +46,49 @@ parent rotation. Nothing is assumed about the rig's axis conventions — everyth
 derived from the file itself, so Meshy models, Mixamo rigs and hand-made skeletons
 all work the same way.
 
-What is not transferred: fingers, facial expression, and twist around a bone's own
-axis — 33 MediaPipe points do not carry it. Low-visibility points are skipped: the
-bone stays at rest instead of inheriting the jitter.
+A single frame goes through the same maths, except the result is written into the
+bones' own TRS instead of an animation track — the file opens already posed, with the
+model's other clips removed so nothing plays over it.
+
+What is not transferred: fingers, and twist around a bone's own axis — 33 MediaPipe
+points do not carry it. Low-visibility points are skipped: the bone stays at rest
+instead of inheriting the jitter.
 
 ## Limits
 
 - one person in frame (`num_poses=1`);
-- the first 15 seconds by default (configurable in the UI, 120 max);
+- clips take the first 15 seconds by default (configurable, 120 max);
 - the model must contain a `skin`, otherwise there is nothing to animate;
+- expression transfer needs morph targets in the model — without them only the
+  coefficients are saved, as JSON;
 - hip movement (root motion) is off by default: the "metres → model units" scale is
   estimated from shin length and gets it wrong on unusual proportions.
 
+## API
+
+```
+POST /api/projects                       {name}                     → project
+POST /api/projects/{id}/model            multipart .glb             → bones, mapping, missing
+POST /api/projects/{id}/sources          multipart video or photo   → source
+GET  /api/sources/{id}/frames            ?count=60                  → film strip
+POST /api/projects/{id}/poses            {source_id, times[]}       → job → one .glb per frame
+POST /api/projects/{id}/clips            {source_id, max_seconds}   → job → .glb + animation.json
+POST /api/projects/{id}/results/{r}/trim {start, end}               → fragment as a new result
+POST /api/projects/{id}/face             {source_id, mode}          → job → morph weights
+POST /api/projects/{id}/faceswap         {source_id, face_id}       → job → swapped clips
+PUT  /api/models/{id}/mapping            {slot: bone}               → bone mapping
+GET  /api/jobs/{id}                                                 → status, progress, results
+```
+
+`POST /api/jobs {model_id, video_id}` still exists for callers outside a project
+(that is what the Telegram bot uses).
+
 ## Storage
 
-Everything lives in `./data` (a container volume): `models/<id>/{model.glb,meta.json}`,
-`videos/`, `jobs/<id>/{result.glb,animation.json}`. There is no database: a job holds
-no state worth keeping longer than its result file.
+Everything lives in `./data` (a container volume): `projects/<id>/project.json` plus
+`results/`, `models/<id>/{model.glb,meta.json}`, `videos/`, `photos/`, `thumbs/`.
+There is no database: a project fits in one small JSON file and the results are
+files anyway.
 
 ## Running under a sub-path
 
@@ -80,11 +106,25 @@ location /nella/ {
 }
 ```
 
-## Recognition model
+## Environment
 
-`app/pose_landmarker.task` (9 MB) — MediaPipe Pose Landmarker (full, float16),
-committed to the repository so the build does not depend on the network. Override it
-with the `POSE_MODEL` environment variable.
+| Variable | Meaning |
+|---|---|
+| `POSE_MODEL` | path to the pose model (`app/pose_landmarker.task` by default) |
+| `FACE_MODEL` | path to the face model (`app/face_landmarker.task` by default) |
+| `FACESWAP_URL` | external face-swap service; without it that screen stays off |
+| `FACESWAP_TOKEN` | shared secret sent to that service as `X-Internal-Token` |
+
+The face-swap provider protocol is deliberately tiny: `POST` the two files as
+`source` and `target` → `{"job": id}`; `GET {url}/{job}` → `{"status": "running"}`
+or `{"status": "ok", "files": [...]}`; `GET {url}/{job}/files/{name}` returns a clip.
+Neither insightface nor the swap weights ship with this repository.
+
+## Recognition models
+
+`app/pose_landmarker.task` (9 MB) and `app/face_landmarker.task` (3.7 MB) — MediaPipe
+Pose Landmarker (full, float16) and Face Landmarker, committed to the repository so
+the build does not depend on the network.
 
 ## Demo page (GitHub Pages)
 

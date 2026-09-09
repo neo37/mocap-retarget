@@ -5,7 +5,13 @@ services:
     container_name: mocap-retarget
     ports: ["127.0.0.1:8099:8080"]
     volumes:
-      # Загруженные модели, видео и результаты переживают пересборку образа.
+      # Проекты, модели, видео и результаты переживают пересборку образа.
       - ./data:/data
-    mem_limit: 4g
+    environment:
+      # Замена лица делается внешним сервисом — без него экран просто выключен.
+      FACESWAP_URL: ${FACESWAP_URL:-}
+      FACESWAP_TOKEN: ${FACESWAP_TOKEN:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    mem_limit: 6g
     restart: unless-stopped
