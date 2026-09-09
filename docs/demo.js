@@ -44,9 +44,20 @@ const stage = $('stage');
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x14181d);
 const camera = new THREE.PerspectiveCamera(38, 1, 0.05, 100);
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-stage.appendChild(renderer.domElement);
+
+let renderer = null;
+try {
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  stage.appendChild(renderer.domElement);
+} catch (e) {
+  /* No WebGL: the detector still works, there is just nothing to draw with. */
+  const note = document.createElement('p');
+  note.id = 'no-webgl';
+  note.textContent = 'This browser has no WebGL, so the 3D view stays empty.';
+  note.style.cssText = 'position:absolute;inset:0;display:grid;place-items:center;color:#8b95a3;padding:24px;text-align:center';
+  stage.appendChild(note);
+}
 
 scene.add(new THREE.HemisphereLight(0xdfe9ff, 0x1a2026, 1.4));
 const key = new THREE.DirectionalLight(0xffffff, 1.7);
@@ -135,6 +146,8 @@ const view = { yaw: 0.5, pitch: 0.12, radius: 3.4, target: new THREE.Vector3(0, 
 const HOME = { yaw: 0.5, pitch: 0.12, radius: 3.4 };
 
 let dragging = null;
+if (renderer) bindPointer();
+function bindPointer() {
 renderer.domElement.addEventListener('pointerdown', (e) => {
   dragging = { x: e.clientX, y: e.clientY };
   renderer.domElement.setPointerCapture(e.pointerId);
@@ -152,6 +165,7 @@ renderer.domElement.addEventListener('wheel', (e) => {
   e.preventDefault();
   view.radius = Math.max(1.2, Math.min(9, view.radius * (1 + Math.sign(e.deltaY) * 0.09)));
 }, { passive: false });
+}
 
 function setSpin(on) {
   view.spin = on;
@@ -162,7 +176,7 @@ $('reset').onclick = () => { Object.assign(view, HOME); setSpin(true); };
 
 function resize() {
   const w = stage.clientWidth, h = stage.clientHeight;
-  if (!w || !h) return;
+  if (!renderer || !w || !h) return;
   renderer.setSize(w, h, false);
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
@@ -171,7 +185,7 @@ addEventListener('resize', resize);
 resize();
 
 let last = performance.now();
-(function loop(now = performance.now()) {
+if (renderer) (function loop(now = performance.now()) {
   requestAnimationFrame(loop);
   const dt = Math.min((now - last) / 1000, 0.05);
   last = now;
