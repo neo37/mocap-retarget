@@ -1,67 +1,94 @@
-# Захват движения из видео → любая rigged-модель
+# Motion capture from video → any rigged model
 
-Локальный сервис: загружаете **видео** с человеком и **модель со скелетом** (`.glb`) —
-получаете ту же модель с новым клипом анимации, повторяющим движение с видео.
-Скелет модели может быть любым: на отдельном экране указываете, какая кость
-соответствует какому суставу гуманоида.
+A local service: upload a **video** of a person and a **rigged model** (`.glb`) —
+get the same model back with a new animation clip that reproduces the motion from
+the video. The rig can be arbitrary: on a separate screen you say which bone plays
+which humanoid joint.
+
+**[Live demo](https://neo37.github.io/mocap-retarget/)** — drop a photo in the
+browser, get the detected pose as a 3D figure on the page (runs fully client-side).
 
 ```
 docker compose up --build     →  http://127.0.0.1:8099
 ```
 
-## Что внутри
+## What's inside
 
-| Слой | Файл | Задача |
+| Layer | File | Job |
 |---|---|---|
-| Съёмка | `app/pose.py` | MediaPipe Pose Landmarker в режиме видео: 33 точки на кадр, world-координаты |
-| Скелет | `app/humanoid.py` | 19 слотов гуманоида, синонимы имён (Meshy, Mixamo, VRM, Unreal, Rigify), авто-сопоставление |
-| Перенос | `app/retarget.py` | направление кости на видео → кратчайший поворот от позы покоя → локальный кватернион |
-| glTF | `app/gltf.py` | чтение GLB, поза покоя, дозапись клипа обратно в файл |
-| HTTP+UI | `app/main.py`, `app/static/` | загрузка, задачи, просмотр результата в three.js |
+| Capture | `app/pose.py` | MediaPipe Pose Landmarker in video mode: 33 points per frame, world coordinates |
+| Skeleton | `app/humanoid.py` | 19 humanoid slots, name synonyms (Meshy, Mixamo, VRM, Unreal, Rigify), automatic matching |
+| Retarget | `app/retarget.py` | bone direction in the video → shortest rotation from the rest pose → local quaternion |
+| glTF | `app/gltf.py` | reading GLB, rest pose, appending the clip back into the file |
+| HTTP+UI | `app/main.py`, `app/static/` | uploads, jobs, result preview in three.js |
 
-Ни Blender, ни игрового движка: прямая кинематика и запись glTF сделаны руками,
-поэтому образ лёгкий и всё работает без видеокарты.
+No Blender, no game engine: forward kinematics and glTF writing are done by hand,
+so the image stays small and everything runs without a GPU.
 
-## Как пользоваться
+## How to use it
 
-1. **Съёмка** — перетащите `.glb` и видео, нажмите «Снять движение».
-   Настройки: название клипа, сколько секунд брать, сглаживание (скользящее среднее
-   по точкам — MediaPipe заметно дрожит), переносить ли перемещение таза.
-2. **Скелет** — если модель с необычным ригом, откройте вкладку и укажите кости
-   вручную. Обязательные слоты помечены точкой: таз, плечи, предплечья, бёдра, голени.
-   Что удалось — подставлено по именам.
-3. Результат: **модель с анимацией** (`.glb`, клип дописан к существующим) и
-   **сама анимация** (`.json`: времена + кватернионы по костям — можно применить к
-   другой модели с тем же ригом или в своём коде).
+1. **Capture** — drag in a `.glb` and a video, press "Capture motion".
+   Settings: clip name, how many seconds to take, smoothing (a moving average over
+   the landmarks — MediaPipe jitters noticeably), whether to transfer hip movement.
+2. **Skeleton** — for an unusual rig, open the tab and pick the bones by hand.
+   Required slots are marked with a dot: hips, upper arms, forearms, thighs, shins.
+   Whatever could be matched by name is filled in already.
+3. Result: the **animated model** (`.glb`, the clip is appended to the existing ones)
+   and the **animation alone** (`.json`: times plus per-bone quaternions — apply it to
+   another model with the same rig, or use it from your own code).
 
-## Как работает перенос
+## How the retargeting works
 
-Для каждой кости берётся её направление в позе покоя модели и направление того же
-сегмента тела на видео; между ними считается кратчайший поворот, затем он переводится
-в локальные координаты кости через уже вычисленный поворот родителя. Никаких
-предположений об ориентации осей рига — всё выводится из самого файла, поэтому
-одинаково работает и на Meshy-моделях, и на Mixamo, и на рукодельном скелете.
+For every bone the service takes its direction in the model's rest pose and the
+direction of the same body segment in the video, computes the shortest rotation
+between them, and converts it into the bone's local space using the already computed
+parent rotation. Nothing is assumed about the rig's axis conventions — everything is
+derived from the file itself, so Meshy models, Mixamo rigs and hand-made skeletons
+all work the same way.
 
-Что не переносится: пальцы, мимика, поворот кости вокруг собственной оси (twist) —
-из 33 точек MediaPipe он не выводится. Точки с низкой видимостью пропускаются:
-кость остаётся в покое, дрожь не переносится.
+What is not transferred: fingers, facial expression, and twist around a bone's own
+axis — 33 MediaPipe points do not carry it. Low-visibility points are skipped: the
+bone stays at rest instead of inheriting the jitter.
 
-## Ограничения
+## Limits
 
-- один человек в кадре (`num_poses=1`);
-- по умолчанию берутся первые 15 секунд (меняется в интерфейсе, максимум 120);
-- модель обязана содержать `skin` — иначе анимировать нечего;
-- перемещение таза (root motion) выключено по умолчанию: масштаб «метры → единицы
-  модели» оценивается по длине голени и на нестандартных пропорциях врёт.
+- one person in frame (`num_poses=1`);
+- the first 15 seconds by default (configurable in the UI, 120 max);
+- the model must contain a `skin`, otherwise there is nothing to animate;
+- hip movement (root motion) is off by default: the "metres → model units" scale is
+  estimated from shin length and gets it wrong on unusual proportions.
 
-## Хранилище
+## Storage
 
-Всё лежит в `./data` (том контейнера): `models/<id>/{model.glb,meta.json}`,
-`videos/`, `jobs/<id>/{result.glb,animation.json}`. Базы нет: у задачи нет состояния,
-которое стоило бы хранить дольше файла результата.
+Everything lives in `./data` (a container volume): `models/<id>/{model.glb,meta.json}`,
+`videos/`, `jobs/<id>/{result.glb,animation.json}`. There is no database: a job holds
+no state worth keeping longer than its result file.
 
-## Модель распознавания
+## Running under a sub-path
 
-`app/pose_landmarker.task` (9 МБ) — MediaPipe Pose Landmarker (full, float16),
-положен в репозиторий, чтобы сборка не зависела от сети. Заменить можно переменной
-`POSE_MODEL`.
+The front-end resolves API paths relative to where its script is served from, so the
+service works both at the root and behind a prefix, e.g.
+`https://videos.ai3d.art/nella/`:
+
+```nginx
+location /nella/ {
+    proxy_pass http://127.0.0.1:8099/;
+    proxy_set_header Host $host;
+    proxy_request_buffering off;
+    proxy_read_timeout 900s;
+    client_max_body_size 520M;
+}
+```
+
+## Recognition model
+
+`app/pose_landmarker.task` (9 MB) — MediaPipe Pose Landmarker (full, float16),
+committed to the repository so the build does not depend on the network. Override it
+with the `POSE_MODEL` environment variable.
+
+## Demo page (GitHub Pages)
+
+`docs/` is a standalone static page: MediaPipe Pose Landmarker compiled to WASM runs
+in the browser, the photo never leaves the machine, and the detected pose is drawn as
+a 3D skeleton with three.js. It is the same 33-point representation the service feeds
+into the retargeter, minus the model and the video.
