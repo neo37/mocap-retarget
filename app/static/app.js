@@ -3,8 +3,12 @@ import * as THREE from './vendor/three.module.js';
 import { GLTFLoader } from './vendor/GLTFLoader.js';
 
 const $ = (id) => document.getElementById(id);
+/** Базовый путь: скрипт лежит рядом с index.html, поэтому сервис работает и в
+    подкаталоге (например https://videos.ai3d.art/nella/), и в корне. */
+const BASE = new URL('.', import.meta.url).pathname.replace(/\/$/, '');
+const u = (path) => (path && path.startsWith('/') ? BASE + path : path);
 const api = async (url, opts) => {
-  const r = await fetch(url, opts);
+  const r = await fetch(u(url), opts);
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `${url} → ${r.status}`);
   return r.json();
 };
@@ -162,8 +166,8 @@ async function poll(jobId) {
     $('job-bar').style.width = Math.round((j.progress || 0) * 100) + '%';
     if (j.status === 'error') { $('job-stage').textContent = 'ошибка: ' + j.error; return; }
     if (j.status === 'ok') {
-      $('dl-glb').href = j.result;
-      $('dl-anim').href = j.animation;
+      $('dl-glb').href = u(j.result);
+      $('dl-anim').href = u(j.animation);
       $('job-stats').textContent = `клип «${j.clip}», ${j.frames} кадров, ${j.fps} к/с`;
       $('job-result').classList.remove('hidden');
       preview(j.result);
@@ -208,7 +212,7 @@ function preview(url) {
       renderer.render(scene, camera);
     })();
   }
-  new GLTFLoader().load(url, (gltf) => {
+  new GLTFLoader().load(u(url), (gltf) => {
     if (viewer.model) viewer.scene.remove(viewer.model);
     const root = gltf.scene;
     const box = new THREE.Box3().setFromObject(root);
