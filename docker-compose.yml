@@ -1,0 +1,11 @@
+# Локальный запуск: docker compose up --build  →  http://127.0.0.1:8099
+services:
+  mocap:
+    build: .
+    container_name: mocap-retarget
+    ports: ["127.0.0.1:8099:8080"]
+    volumes:
+      # Загруженные модели, видео и результаты переживают пересборку образа.
+      - ./data:/data
+    mem_limit: 4g
+    restart: unless-stopped

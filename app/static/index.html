@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Захват движения из видео</title>
+<style>
+  :root { --bg:#f5f6fa; --card:#fff; --ink:#1c2333; --muted:#6b7488; --line:#e4e7f0; --accent:#3b5bdb; --ok:#2f9e44; --err:#e03131; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif; }
+  header { padding:20px 28px; background:var(--card); border-bottom:1px solid var(--line); display:flex; gap:24px; align-items:center; }
+  header h1 { font-size:17px; margin:0; font-weight:650; }
+  nav { display:flex; gap:6px; }
+  nav button { border:0; background:transparent; padding:8px 14px; border-radius:8px; cursor:pointer; font:inherit; color:var(--muted); }
+  nav button.active { background:#eef1fd; color:var(--accent); font-weight:600; }
+  main { max-width:1180px; margin:0 auto; padding:24px 28px 60px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:18px 20px; }
+  .card h2 { font-size:14px; margin:0 0 14px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
+  .drop { border:1.5px dashed #c7cde0; border-radius:12px; padding:22px; text-align:center; color:var(--muted); cursor:pointer; transition:.15s; }
+  .drop:hover, .drop.over { border-color:var(--accent); background:#f7f9ff; color:var(--accent); }
+  select, input[type=text], input[type=number] { width:100%; padding:9px 11px; border:1px solid var(--line); border-radius:9px; font:inherit; background:#fff; }
+  label { display:block; font-size:13px; color:var(--muted); margin:12px 0 5px; }
+  button.primary { background:var(--accent); color:#fff; border:0; border-radius:10px; padding:11px 18px; font:inherit; font-weight:600; cursor:pointer; }
+  button.primary:disabled { opacity:.5; cursor:default; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .muted { color:var(--muted); font-size:13px; }
+  .bar { height:6px; background:#eef0f6; border-radius:99px; overflow:hidden; margin:12px 0 6px; }
+  .bar span { display:block; height:100%; background:var(--accent); width:0; transition:width .3s; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  td, th { padding:7px 8px; border-bottom:1px solid var(--line); text-align:left; vertical-align:middle; }
+  th { font-size:12px; text-transform:uppercase; letter-spacing:.03em; color:var(--muted); font-weight:600; }
+  tr.required td:first-child::after { content:' •'; color:var(--err); }
+  tr.unmapped { background:#fff6f6; }
+  .pill { display:inline-block; padding:2px 9px; border-radius:99px; font-size:12px; background:#eef1fd; color:var(--accent); }
+  .pill.ok { background:#e8f8ec; color:var(--ok); }
+  .pill.err { background:#fdecec; color:var(--err); }
+  #viewer { width:100%; height:340px; background:#eceffa; border-radius:12px; }
+  .hidden { display:none; }
+  a.dl { display:inline-block; margin-right:12px; color:var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Захват движения из видео</h1>
+  <nav>
+    <button data-tab="capture" class="active">Съёмка</button>
+    <button data-tab="skeleton">Скелет</button>
+  </nav>
+  <span class="muted" id="health"></span>
+</header>
+
+<main>
+  <section id="tab-capture">
+    <div class="grid">
+      <div class="card">
+        <h2>1. Модель со скелетом</h2>
+        <div class="drop" id="model-drop">Перетащите .glb или нажмите</div>
+        <input type="file" id="model-input" accept=".glb,.gltf" class="hidden" />
+        <label>Уже загруженные</label>
+        <select id="model-select"></select>
+        <div class="muted" id="model-info" style="margin-top:8px"></div>
+      </div>
+
+      <div class="card">
+        <h2>2. Видео с движением</h2>
+        <div class="drop" id="video-drop">Перетащите видео или нажмите</div>
+        <input type="file" id="video-input" accept="video/*" class="hidden" />
+        <label>Уже загруженные</label>
+        <select id="video-select"></select>
+        <div class="row" style="margin-top:12px">
+          <div style="flex:1"><label>Название клипа</label><input type="text" id="clip-name" value="Захват с видео" /></div>
+          <div style="width:120px"><label>Секунд</label><input type="number" id="seconds" value="15" min="1" max="120" /></div>
+          <div style="width:120px"><label>Сглаживание</label><input type="number" id="smooth" value="5" min="0" max="21" /></div>
+        </div>
+        <label style="display:flex;gap:8px;align-items:center;margin-top:12px">
+          <input type="checkbox" id="root-motion" /> переносить перемещение таза
+        </label>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:20px">
+      <div class="row" style="justify-content:space-between">
+        <button class="primary" id="run">Снять движение</button>
+        <span id="job-stage" class="muted"></span>
+      </div>
+      <div class="bar"><span id="job-bar"></span></div>
+      <div id="job-result" class="hidden">
+        <div class="row" style="margin:10px 0 14px">
+          <a class="dl" id="dl-glb" download>Скачать модель с анимацией (.glb)</a>
+          <a class="dl" id="dl-anim" download>Скачать саму анимацию (.json)</a>
+          <span class="pill ok" id="job-stats"></span>
+        </div>
+        <div id="viewer"></div>
+        <div class="muted" style="margin-top:8px">Мышью — поворот сцены. Клип проигрывается по кругу.</div>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-skeleton" class="hidden">
+    <div class="card">
+      <h2>Сопоставление костей</h2>
+      <div class="row">
+        <div style="flex:1"><label>Модель</label><select id="sk-model"></select></div>
+        <div style="align-self:flex-end"><button class="primary" id="sk-save">Сохранить</button></div>
+      </div>
+      <p class="muted" style="margin-top:12px">
+        Слева — суставы обычного гуманоида, справа — кости вашей модели. Точками отмечены обязательные:
+        без них движение не перенести. Что удалось — подставлено по именам, остальное укажите руками.
+      </p>
+      <table>
+        <thead><tr><th style="width:220px">Сустав гуманоида</th><th>Кость модели</th></tr></thead>
+        <tbody id="sk-rows"></tbody>
+      </table>
+      <div class="row" style="margin-top:14px"><span id="sk-status" class="muted"></span></div>
+    </div>
+  </section>
+</main>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>
